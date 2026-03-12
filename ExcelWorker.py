@@ -44,6 +44,6 @@ class ExcelWorker:
             while len(sheet) <= row_index:
                 sheet.append_rows(1)
             
-            sheet[(row_index, col)].set_value(value)
+            sheet[(row_index+1, col)].set_value(value)
         
         doc.save()
