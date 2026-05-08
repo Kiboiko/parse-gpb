@@ -7,11 +7,11 @@ import sys
 
 def main():
     # Настройки
-    file_path = r'Сводный Нет в ИС метрология минус 1000-2000.ods'
+    file_path = r"D:\GitHub\parse-gpb\Бойко А.П. Нет в ИС метрология.ods"
     start_col = 23
     
     # Можно указать строку начала как аргумент командной строки
-    start_row = 867  # Начинаем с места последней ошибки
+    start_row = 1  # Начинаем с места последней ошибки
     if len(sys.argv) > 1:
         try:
             start_row = int(sys.argv[1])

@@ -1,89 +1,88 @@
-import requests
-from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
+from webdriver_manager.chrome import ChromeDriverManager
 import time
 import random
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 class Parser:
-    def __init__(self, headless=None):  # headless оставлен для совместимости, но не используется
-        """Инициализация парсера на requests"""
-        self.session = self._create_session()
+    def __init__(self, headless=True):
+        """Инициализация парсера с Selenium"""
+        self.headless = headless
+        self.driver = self._create_driver()
         self.base_url = 'https://fgis.gost.ru/fundmetrology/cm/results/1-{}'
         
-    def _create_session(self):
-        """Создание сессии с повторными попытками и заголовками"""
-        session = requests.Session()
+    def _create_driver(self):
+        """Создание Chrome драйвера"""
+        chrome_options = Options()
         
-        # Настройка повторных попыток
-        retry_strategy = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-        )
+        if self.headless:
+            chrome_options.add_argument('--headless')
         
-        adapter = HTTPAdapter(
-            max_retries=retry_strategy,
-            pool_connections=10,
-            pool_maxsize=10
-        )
+        chrome_options.add_argument('--no-sandbox')
+        chrome_options.add_argument('--disable-dev-shm-usage')
+        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+        chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+        chrome_options.add_argument('--disable-extensions')
+        chrome_options.add_argument('--disable-plugins')
         
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
+        # Автоматический скачивание и использование Chrome WebDriver
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        driver.set_page_load_timeout(30)
+        driver.implicitly_wait(10)
         
-        # Реалистичные заголовки браузера
-        session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1',
-            'Cache-Control': 'max-age=0',
-        })
-        
-        return session
+        return driver
 
     def get_vri_data(self, vri_id: int):
-        """Получение данных по ID поверки через HTTP запрос"""
+        """Получение данных по ID поверки через Selenium"""
         url = self.base_url.format(vri_id)
         
         for attempt in range(3):
             try:
-                # Выполняем GET запрос
-                response = self.session.get(
-                    url, 
-                    timeout=30,
-                    allow_redirects=True
-                )
+                print(f"  Загружаю страницу (попытка {attempt + 1}/3)...")
+                self.driver.get(url)
                 
-                # Проверяем статус ответа
-                response.raise_for_status()
+                # Ждем загрузки контента
+                wait = WebDriverWait(self.driver, 20)
                 
-                # Проверяем кодировку
-                if response.encoding is None:
-                    response.encoding = 'utf-8'
+                # Ищем таблицу с данными
+                try:
+                    wait.until(EC.presence_of_all_elements_located((By.TAG_NAME, 'tr')))
+                except TimeoutException:
+                    print(f"  Таймаут при загрузке таблицы для ID {vri_id}")
+                    if attempt < 2:
+                        time.sleep(random.uniform(2, 4))
+                        continue
+                    return None
                 
-                # Парсим HTML
-                soup = BeautifulSoup(response.text, 'html.parser')
-                
-                # Ищем все строки таблицы
-                rows = soup.find_all('tr')
+                # Получаем все строки таблицы
+                rows = self.driver.find_elements(By.TAG_NAME, 'tr')
                 
                 if not rows:
                     print(f"  На странице не найдено таблиц для ID {vri_id}")
                     return None
                 
-                # Собираем данные, исключая пустые строки
+                # Собираем данные
                 data = []
                 for row in rows:
-                    text = row.get_text(strip=True)
-                    if text and len(text) > 1:  # Игнорируем слишком короткие строки
-                        data.append(text)
+                    try:
+                        text = row.text.strip()
+                        if text and len(text) > 1:
+                            data.append(text)
+                    except:
+                        continue
+                
+                if not data:
+                    print(f"  Не удалось извлечь данные для ID {vri_id}")
+                    if attempt < 2:
+                        time.sleep(random.uniform(1, 2))
+                        continue
+                    return None
                 
                 # Проверяем, что данные содержат ключевые поля
                 required_fields = ['Рег. номер', 'Наименование СИ', 'Дата поверки']
@@ -93,52 +92,43 @@ class Parser:
                     print(f"  Не найдены обязательные поля для ID {vri_id}")
                     return None
                 
-                # Небольшая задержка для имитации человеческого поведения
-                time.sleep(random.uniform(0.3, 0.7))
+                print(f"  Успешно получены данные для ID {vri_id}")
+                
+                # Задержка для имитации человеческого поведения
+                time.sleep(random.uniform(0.5, 1.5))
                 
                 return data
                 
-            except requests.exceptions.Timeout:
+            except TimeoutException:
                 print(f"  Таймаут при загрузке {vri_id} (попытка {attempt + 1}/3)")
                 if attempt < 2:
                     time.sleep(random.uniform(2, 4))
                     continue
                     
-            except requests.exceptions.ConnectionError as e:
-                print(f"  Ошибка соединения для {vri_id}: {e}")
+            except WebDriverException as e:
+                print(f"  Ошибка WebDriver для {vri_id}: {e}")
                 if attempt < 2:
+                    try:
+                        self.driver.quit()
+                    except:
+                        pass
                     time.sleep(random.uniform(3, 5))
-                    # Возможно, проблема с сессией - создаем новую
-                    if attempt == 1:
-                        self.session = self._create_session()
+                    self.driver = self._create_driver()
                     continue
-                    
-            except requests.exceptions.HTTPError as e:
-                if response.status_code == 404:
-                    print(f"  Страница не найдена для ID {vri_id} (404)")
-                    return None
-                elif response.status_code == 403:
-                    print(f"  Доступ запрещен для ID {vri_id} (403)")
-                    time.sleep(random.uniform(5, 10))
-                    if attempt < 2:
-                        continue
-                else:
-                    print(f"  HTTP ошибка {response.status_code} для {vri_id}")
                     
             except Exception as e:
                 print(f"  Неожиданная ошибка при обработке {vri_id}: {type(e).__name__}: {e}")
                 if attempt < 2:
                     time.sleep(random.uniform(2, 3))
                     continue
-            
-            return None
         
         return None
 
     def close(self):
-        """Закрытие сессии"""
+        """Закрытие браузера"""
         try:
-            self.session.close()
+            if self.driver:
+                self.driver.quit()
         except:
             pass
 
